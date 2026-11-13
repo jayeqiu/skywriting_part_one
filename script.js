@@ -52,6 +52,9 @@ let lastVertexInsertMs = 0;
 let dragging = false, draggingVertexIndices = [], draggingHandIndex = -1;
 let poking = false, pokingHandIndex = -1, pokeCompleted = false;
 let timeSinceHandMoved = 0;
+let bg_R = 10;
+let bg_G = 10;
+let bg_B = 10;
 
 function preload() {
     handPose = ml5.handPose( {maxHands: 2, flipHorizontal: true});
@@ -65,6 +68,11 @@ function setup() {
     c.style('position', 'fixed');
     c.style('inset', '0');
     pixelDensity(displayDensity());
+
+    bg_R = random(50, 140);
+    bg_G = random(120, 170);
+    bg_B = random(230, 250);
+
     try {
         const constraints = {
             video: {
@@ -1577,7 +1585,7 @@ function renderShape() {
     push();
     translate(10, 16);
     noStroke();
-    fill(30, 31, 32, 112);
+    fill(30, 31, 32, 12);  // shadow color
     beginShape();
     const shadowSegs = catmullRomToBezier(path, 1);
     vertex(shadowSegs[0].from.x, shadowSegs[0].from.y);
@@ -1693,7 +1701,9 @@ function renderShape() {
 }
 
 function draw() {
-    background(11);
+    // background(11); // black background
+    
+    background(bg_R, bg_G, bg_B); // light blue background
     drawVideoCover(0, 0, width, height);
 
     updateShapeVisibility();
