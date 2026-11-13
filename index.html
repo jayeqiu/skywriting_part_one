@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Hand-Square Interaction</title>
+<title>Skywriting Part One</title>
 <style>
   :root{
     --bg:#0b0d10; --fg:#eef1f4; --accent:#5ad1e6; --muted:#8a94a3;
@@ -17,6 +17,24 @@
   :root[data-theme="dark"]{ --bg:#0b0d10; --fg:#eef1f4; --muted:#8a94a3; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow:hidden;}
+  .top-marquee{
+    position:fixed; top:env(safe-area-inset-top,0px); left:0; z-index:10;
+    width:100vw; height:32px; margin-top:4pt; overflow:hidden; color:#fff;
+    font-size:18pt; line-height:1; white-space:nowrap; pointer-events:none;
+    text-shadow:0 1px 3px #000; opacity: 0.8;
+  }
+  .top-marquee-track{
+    display:flex; align-items:center; width:max-content; height:100%;
+    animation:top-marquee-scroll 40s linear infinite;
+  }
+  .asterisk{vertical-align: -0.2em;}
+  .top-marquee-text{flex:none; padding-right:2em;}
+  @keyframes top-marquee-scroll{
+    to{transform:translateX(-16%);}
+  }
+  @media(prefers-reduced-motion:reduce){
+    .top-marquee-track{animation:none;}
+  }
   #hint{
     position:fixed; left:50%; top:calc(env(safe-area-inset-top,0px) + 14px);
     transform:translateX(-50%); z-index:5; text-align:center;
@@ -65,6 +83,39 @@
 </style>
 </head>
 <body>
+<div class="top-marquee" aria-label="Skywriting ~ Part One · · · · · · · · Designed &amp; Developed by: Jaye (Jiangyue) Qiu – 2026 · · · · · · · · · · · · · ·">
+  <div class="top-marquee-track" aria-hidden="true">
+    <span class="top-marquee-text">
+      Skywriting ~ Part One
+      &nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;&nbsp;&nbsp;
+      Designed &amp; Developed by: Jaye (Jiangyue) Qiu
+      &nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;&nbsp;&nbsp;
+      Inspired by: Han Kang, The White Book (Huin, 2016)&nbsp;&nbsp;–&nbsp;&nbsp;2026
+      &nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;&nbsp;&nbsp;
+      <span style="color: yellow">
+        Touch the outline to mold shape
+        &nbsp;&nbsp;&nbsp;<span class="asterisk">*</span>&nbsp;&nbsp;&nbsp;&nbsp;Pinch thumb and index finger to drag the outline
+        &nbsp;&nbsp;&nbsp;<span class="asterisk">*</span>&nbsp;&nbsp;&nbsp;&nbsp;Pinch thumb and middle finger to make a hole
+        &nbsp;&nbsp;&nbsp;<span class="asterisk">*</span>&nbsp;&nbsp;&nbsp;&nbsp;Wait for 5 seconds for the shape to retreat
+      </span>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;&nbsp;</span>
+    <span class="top-marquee-text">
+      Skywriting ~ Part One
+      &nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;&nbsp;&nbsp;
+      Designed &amp; Developed by: Jaye (Jiangyue) Qiu
+      &nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;&nbsp;&nbsp;
+      Inspired by: Han Kang, The White Book (Huin, 2016)&nbsp;&nbsp;–&nbsp;&nbsp;2026
+      &nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;&nbsp;&nbsp;
+      <span style="color: yellow">
+        Touch the outline to mold shape
+        &nbsp;&nbsp;&nbsp;<span class="asterisk">*</span>&nbsp;&nbsp;&nbsp;&nbsp;Pinch thumb and index finger to drag the outline
+        &nbsp;&nbsp;&nbsp;<span class="asterisk">*</span>&nbsp;&nbsp;&nbsp;&nbsp;Pinch thumb and middle finger to make a hole
+        &nbsp;&nbsp;&nbsp;<span class="asterisk">*</span>&nbsp;&nbsp;&nbsp;&nbsp;Wait for 5 seconds for the shape to retreat
+      </span>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;·&nbsp;&nbsp;&nbsp;</span>
+    </span>
+  </div>
+</div>
 <!-- <div id="hint">Shape your text message with your hands. Pinch your index finger and thumb to drag the contour. Pinch your middle finger and thumb to make a hole.</div>
 <!-- <section id="shape-library" aria-label="Shared shape library">
   <div id="shape-library-controls">

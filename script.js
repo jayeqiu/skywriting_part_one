@@ -447,12 +447,12 @@ function drawHandSizes() {
     const firstHandSize = hands[0] && isHandLargeEnough(hands[0])
         ? `${Math.round(getHandSize(hands[0]))} px`
         : '--';
-    text(`Hand 1: ${firstHandSize}`, 16, 16);
+    // text(`Hand 1: ${firstHandSize}`, 16, 16);
     textAlign(RIGHT, TOP);
     const secondHandSize = hands[1] && isHandLargeEnough(hands[1])
         ? `${Math.round(getHandSize(hands[1]))} px`
         : '--';
-    text(`Hand 2: ${secondHandSize}`, width - 16, 16);
+    // text(`Hand 2: ${secondHandSize}`, width - 16, 16);
     pop();
 }
 
@@ -550,7 +550,7 @@ function updateShapeVisibility() {
         pendingShapeActivation = false;
         instructionHiddenAtMs = null;
         showShape = true;
-        downloadButton.disabled = false;
+        // downloadButton.disabled = false;
         return;
     }
 
