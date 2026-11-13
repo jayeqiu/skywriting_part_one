@@ -101,9 +101,9 @@ function setup() {
     } catch (error) {
         camError = true;
     }
-    const downloadButton = document.getElementById('download-svg');
-    downloadButton.disabled = true;
-    downloadButton.addEventListener('click', downloadShapeAsSvg);
+    // const downloadButton = document.getElementById('download-svg');
+    // downloadButton.disabled = true;
+    // downloadButton.addEventListener('click', downloadShapeAsSvg);
     // document.getElementById('save-shape').addEventListener('click', saveSharedShape);
     // document.getElementById('load-shape').addEventListener('click', loadSharedShape);
     // document.getElementById('refresh-shapes').addEventListener('click', () => {
@@ -509,7 +509,7 @@ function resetShapeToInitial() {
 
 function updateShapeVisibility() {
     const hasEligibleHand = camReady && hands.some(isHandLargeEnough);
-    const downloadButton = document.getElementById('download-svg');
+    // const downloadButton = document.getElementById('download-svg');
 
     if (hasEligibleHand) {
         noEligibleHandSinceMs = null;
@@ -538,7 +538,7 @@ function updateShapeVisibility() {
                 pokingHandIndex = -1;
                 pokeCompleted = false;
                 showShape = true;
-                downloadButton.disabled = false;
+                // downloadButton.disabled = false;
             }
         } else {
             instructionHiddenAtMs = null;
@@ -578,7 +578,7 @@ function updateShapeVisibility() {
         resetShapeToInitial();
         showShape = false;
         showInstruction = true;
-        downloadButton.disabled = true;
+        // downloadButton.disabled = true;
     }
 }
 
