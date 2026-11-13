@@ -6,7 +6,7 @@ const MAX_VERTICES = 1000;
 const HOLE_POINTS = 4;
 const HOLE_RADIUS = 40;
 const SHAPE_RETURN_IDLE_DELAY_MS = 10 * 1000;
-const SHAPE_RETURN_SPEED = 4;
+const SHAPE_RETURN_SPEED = 15;
 const RETREAT_VERTEX_REMOVAL_INTERVAL_MS = 8 * 1000;
 const RETREAT_VERTEX_COLLAPSE_DURATION_MS = 1000;
 const INITIAL_RANDOM = 58;
@@ -16,7 +16,7 @@ const SHARED_SHAPES_TABLE = 'shared_shapes';
 const MIN_HAND_SIZE = 80;
 const MIN_HAND_CONFIDENCE = 0.8;
 const HAND_CONFIRMATION_FRAMES = 3;
-const INSTRUCTION_IDLE_DELAY_MS = 5 * 60 * 1000;
+const INSTRUCTION_IDLE_DELAY_MS = 20 * 60 * 1000;
 const SHAPE_APPEAR_DELAY_MS = 600;
 const SHAPE_FADE_DURATION_MS = 800;
 const MAX_FADE_FRAME_MS = 30;
@@ -447,12 +447,12 @@ function drawHandSizes() {
     const firstHandSize = hands[0] && isHandLargeEnough(hands[0])
         ? `${Math.round(getHandSize(hands[0]))} px`
         : '--';
-    // text(`Hand 1: ${firstHandSize}`, 16, 16);
+    text(`Hand 1: ${firstHandSize}`, 16, 16);
     textAlign(RIGHT, TOP);
     const secondHandSize = hands[1] && isHandLargeEnough(hands[1])
         ? `${Math.round(getHandSize(hands[1]))} px`
         : '--';
-    // text(`Hand 2: ${secondHandSize}`, width - 16, 16);
+    text(`Hand 2: ${secondHandSize}`, width - 16, 16);
     pop();
 }
 
