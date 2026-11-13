@@ -1,25 +1,61 @@
+// working version that rejects outline intersection
+
 // ---------- tunables ----------
 const INITIAL_SIZE = 800;
 const MAX_VERTICES = 1000;
 const HOLE_POINTS = 4;
 const HOLE_RADIUS = 40;
+const SHAPE_RETURN_IDLE_DELAY_MS = 10 * 1000;
+const SHAPE_RETURN_SPEED = 4;
+const RETREAT_VERTEX_REMOVAL_INTERVAL_MS = 8 * 1000;
+const RETREAT_VERTEX_COLLAPSE_DURATION_MS = 1000;
 const INITIAL_RANDOM = 58;
 const SUPABASE_URL = '';
 const SUPABASE_ANON_KEY = '';
 const SHARED_SHAPES_TABLE = 'shared_shapes';
+const MIN_HAND_SIZE = 80;
+const MIN_HAND_CONFIDENCE = 0.8;
+const HAND_CONFIRMATION_FRAMES = 3;
+const INSTRUCTION_IDLE_DELAY_MS = 5 * 60 * 1000;
+const SHAPE_APPEAR_DELAY_MS = 600;
+const SHAPE_FADE_DURATION_MS = 800;
+const MAX_FADE_FRAME_MS = 30;
 // const PUSH_RADIUS = 46;
 
 let video, handPose, hands = [];
-let path, holes = [];
+let handDetectionTracks = [];
+let confirmedHandDetections = new Set();
+let path = [], holes = [];
 let initialShapeOffsets;
+let initialShapeAnchors = [];
+let instructionImage;
+let shapeInitialized = false;
+let showShape = false;
+let shapeOpacity = 0;
+let showInstruction = true;
+let instructionOpacity = 1;
+let pendingShapeActivation = false;
+let instructionHiddenAtMs = null;
+let lastFadeUpdateMs = 0;
+let noEligibleHandSinceMs = null;
+let shapeRetreatStartedAtMs = null;
+let nextRetreatVertexRemovalAtMs = null;
+let lastShapeRetreatUpdateMs = null;
+let retreatAnchors = [];
+let retreatVerticesToRemove = [];
+let retreatVertexBeingRemoved = null;
+let retreatVertexRemovalStartedAtMs = null;
+let retreatVertexRemovalStartPosition = null;
 let camReady = false, camError = false;
 let sx, sy, sw, sh; // for drawVideoCover
 let lastVertexInsertMs = 0;
 let dragging = false, draggingVertexIndices = [], draggingHandIndex = -1;
 let poking = false, pokingHandIndex = -1, pokeCompleted = false;
+let timeSinceHandMoved = 0;
 
 function preload() {
     handPose = ml5.handPose( {maxHands: 2, flipHorizontal: true});
+    instructionImage = loadImage('svg/instruction.svg');
 }
 
 function setup() {
@@ -40,7 +76,7 @@ function setup() {
         };
 
         video = createCapture(constraints, () => {
-            console.log('实际摄像头分辨率:', video.elt.videoWidth, video.elt.videoHeight);
+            console.log('actual camera resolution:', video.elt.videoWidth, video.elt.videoHeight);
             camReady = true;
             calculateCamCoverParams();
             handPose.detectStart(video, gotHands);
@@ -57,8 +93,9 @@ function setup() {
     } catch (error) {
         camError = true;
     }
-    buildPath();
-    document.getElementById('download-svg').addEventListener('click', downloadShapeAsSvg);
+    const downloadButton = document.getElementById('download-svg');
+    downloadButton.disabled = true;
+    downloadButton.addEventListener('click', downloadShapeAsSvg);
     // document.getElementById('save-shape').addEventListener('click', saveSharedShape);
     // document.getElementById('load-shape').addEventListener('click', loadSharedShape);
     // document.getElementById('refresh-shapes').addEventListener('click', () => {
@@ -86,6 +123,7 @@ function windowResized() {
     };
     path.forEach(resizeVertex);
     holes.forEach(hole => hole.points.forEach(resizeVertex));
+    initialShapeAnchors.forEach(resizeVertex);
     dragging = false;
     draggingVertexIndices = [];
     draggingHandIndex = -1;
@@ -133,6 +171,8 @@ function buildPath() {
         (x + initialShapeOffsets[i].x - (minX + maxX) / 2) * scale + width / 2,
         (y + initialShapeOffsets[i].y - (minY + maxY) / 2) * scale + height / 2
     )));
+    initialShapeAnchors = path.map(vertex => new Vertex(vertex.pos));
+    cancelShapeRetreat();
 
     video.elt.onloadedmetadata = () => {
     console.log(video.elt.videoWidth, 'x', video.elt.videoHeight);
@@ -252,6 +292,8 @@ function restoreSharedShape(shape) {
 
     path = restoreVertices(shape.outline);
     holes = shape.holes.map(points => ({ points: restoreVertices(points) }));
+    initialShapeAnchors = path.map(vertex => new Vertex(vertex.pos));
+    cancelShapeRetreat();
     dragging = false;
     draggingVertexIndices = [];
     draggingHandIndex = -1;
@@ -333,7 +375,234 @@ function gotHands(results) {
             y: (keypoint.y - sy) * (height / sh)
         }))
     }));
+    const nextTracks = [];
+    const nextConfirmedHands = new Set();
+    const usedTracks = new Set();
+    for (const hand of hands) {
+        if (!isHandDetectionCandidate(hand)) continue;
+
+        const wrist = hand.keypoints[0];
+        const maxTrackDistance = Math.max(MIN_HAND_SIZE * 2, getHandSize(hand) * 1.5);
+        let matchedTrackIndex = -1;
+        let closestTrackDistance = maxTrackDistance;
+        for (let i = 0; i < handDetectionTracks.length; i++) {
+            const track = handDetectionTracks[i];
+            if (usedTracks.has(i) ||
+                (track.handedness && hand.handedness && track.handedness !== hand.handedness)) continue;
+            const trackDistance = dist(wrist.x, wrist.y, track.x, track.y);
+            if (trackDistance < closestTrackDistance) {
+                closestTrackDistance = trackDistance;
+                matchedTrackIndex = i;
+            }
+        }
+
+        const matchedTrack = matchedTrackIndex >= 0 ? handDetectionTracks[matchedTrackIndex] : null;
+        if (matchedTrack) usedTracks.add(matchedTrackIndex);
+        const frames = matchedTrack ? matchedTrack.frames + 1 : 1;
+        nextTracks.push({ x: wrist.x, y: wrist.y, frames, handedness: hand.handedness });
+        if (frames >= HAND_CONFIRMATION_FRAMES) nextConfirmedHands.add(hand);
+    }
+    handDetectionTracks = nextTracks;
+    confirmedHandDetections = nextConfirmedHands;
     // console.log('hands detected:', hands.length);
+}
+
+function getHandSize(hand) {
+    const indexBase = hand.keypoints[5];
+    const pinkyBase = hand.keypoints[17];
+    const middleBase = hand.keypoints[9];
+    const palmBase = hand.keypoints[0];
+    if (!indexBase || !pinkyBase || !middleBase || !palmBase) return 0;
+    return max(dist(indexBase.x, indexBase.y, pinkyBase.x, pinkyBase.y), dist(middleBase.x, middleBase.y, palmBase.x, palmBase.y));
+}
+
+function isHandLargeEnough(hand) {
+    return confirmedHandDetections.has(hand) && isHandDetectionCandidate(hand);
+}
+
+function isHandDetectionCandidate(hand) {
+    return Number.isFinite(hand.confidence) &&
+        hand.confidence >= MIN_HAND_CONFIDENCE &&
+        Array.isArray(hand.keypoints) &&
+        hand.keypoints.length >= 21 &&
+        hand.keypoints.every(keypoint => Number.isFinite(keypoint.x) && Number.isFinite(keypoint.y)) &&
+        getHandSize(hand) > MIN_HAND_SIZE;
+}
+
+function drawHandSizes() {
+    push();
+    textSize(18);
+    textAlign(LEFT, TOP);
+    stroke(0, 200);
+    strokeWeight(4);
+    fill(255);
+    const firstHandSize = hands[0] && isHandLargeEnough(hands[0])
+        ? `${Math.round(getHandSize(hands[0]))} px`
+        : '--';
+    // text(`Hand 1: ${firstHandSize}`, 16, 16);
+    textAlign(RIGHT, TOP);
+    const secondHandSize = hands[1] && isHandLargeEnough(hands[1])
+        ? `${Math.round(getHandSize(hands[1]))} px`
+        : '--';
+    // text(`Hand 2: ${secondHandSize}`, width - 16, 16);
+    pop();
+}
+
+function drawInstructionImage() {
+    const scale = Math.min(width / instructionImage.width, height / instructionImage.height);
+    const imageWidth = instructionImage.width * scale;
+    const imageHeight = instructionImage.height * scale;
+    image(
+        instructionImage,
+        (width - imageWidth) / 2,
+        (height - imageHeight) / 2,
+        imageWidth,
+        imageHeight
+    );
+}
+
+function cancelShapeRetreat() {
+    shapeRetreatStartedAtMs = null;
+    nextRetreatVertexRemovalAtMs = null;
+    lastShapeRetreatUpdateMs = null;
+    retreatAnchors = [];
+    retreatVerticesToRemove = [];
+    retreatVertexBeingRemoved = null;
+    retreatVertexRemovalStartedAtMs = null;
+    retreatVertexRemovalStartPosition = null;
+}
+
+function startShapeRetreat() {
+    if (shapeRetreatStartedAtMs !== null || !path.length || !initialShapeAnchors.length) return;
+
+    const now = millis();
+    const anchorCount = Math.min(path.length, initialShapeAnchors.length);
+    const anchorIndices = new Set();
+    retreatAnchors = [];
+    for (let i = 0; i < anchorCount; i++) {
+        const currentIndex = Math.floor(i * path.length / anchorCount);
+        const initialIndex = Math.floor(i * initialShapeAnchors.length / anchorCount);
+        const vertex = path[currentIndex];
+        anchorIndices.add(vertex);
+        retreatAnchors.push({ vertex, target: initialShapeAnchors[initialIndex].pos.copy() });
+    }
+
+    retreatVerticesToRemove = path.filter(vertex => !anchorIndices.has(vertex));
+    shapeRetreatStartedAtMs = now;
+    lastShapeRetreatUpdateMs = now;
+    nextRetreatVertexRemovalAtMs = now + RETREAT_VERTEX_REMOVAL_INTERVAL_MS - RETREAT_VERTEX_COLLAPSE_DURATION_MS;
+}
+
+function resetShapeToInitial() {
+    path = initialShapeAnchors.map(anchor => new Vertex(anchor.pos));
+    holes = [];
+    cancelShapeRetreat();
+}
+
+function updateShapeVisibility() {
+    const hasEligibleHand = camReady && hands.some(isHandLargeEnough);
+    const downloadButton = document.getElementById('download-svg');
+
+    if (hasEligibleHand) {
+        noEligibleHandSinceMs = null;
+        cancelShapeRetreat();
+        showInstruction = false;
+        if (!shapeInitialized) pendingShapeActivation = true;
+    }
+
+    if (!shapeInitialized && pendingShapeActivation) {
+        showInstruction = false;
+        if (!hasEligibleHand && noEligibleHandSinceMs === null) {
+            noEligibleHandSinceMs = millis();
+        }
+        if (instructionOpacity === 0) {
+            if (instructionHiddenAtMs === null) instructionHiddenAtMs = millis();
+            if (millis() - instructionHiddenAtMs >= SHAPE_APPEAR_DELAY_MS) {
+                buildPath();
+                holes = [];
+                shapeInitialized = true;
+                pendingShapeActivation = false;
+                instructionHiddenAtMs = null;
+                dragging = false;
+                draggingVertexIndices = [];
+                draggingHandIndex = -1;
+                poking = false;
+                pokingHandIndex = -1;
+                pokeCompleted = false;
+                showShape = true;
+                downloadButton.disabled = false;
+            }
+        } else {
+            instructionHiddenAtMs = null;
+        }
+        return;
+    }
+
+    if (hasEligibleHand) {
+        pendingShapeActivation = false;
+        instructionHiddenAtMs = null;
+        showShape = true;
+        downloadButton.disabled = false;
+        return;
+    }
+
+    if (!shapeInitialized) {
+        if (noEligibleHandSinceMs === null) {
+            showInstruction = true;
+            return;
+        }
+        if (millis() - noEligibleHandSinceMs >= INSTRUCTION_IDLE_DELAY_MS) {
+            noEligibleHandSinceMs = null;
+            showInstruction = true;
+        }
+        return;
+    }
+    if (!showShape) {
+        showInstruction = true;
+        return;
+    }
+
+    if (noEligibleHandSinceMs === null) noEligibleHandSinceMs = millis();
+    if (millis() - noEligibleHandSinceMs >= SHAPE_RETURN_IDLE_DELAY_MS) {
+        startShapeRetreat();
+    }
+    if (millis() - noEligibleHandSinceMs >= INSTRUCTION_IDLE_DELAY_MS) {
+        resetShapeToInitial();
+        showShape = false;
+        showInstruction = true;
+        downloadButton.disabled = true;
+    }
+}
+
+function updateShapeOpacity() {
+    const now = millis();
+    const elapsed = Math.min(Math.max(now - lastFadeUpdateMs, 0), MAX_FADE_FRAME_MS);
+    lastFadeUpdateMs = now;
+    const fadeStep = elapsed / SHAPE_FADE_DURATION_MS;
+
+    if (showInstruction) {
+        instructionOpacity = Math.min(1, instructionOpacity + fadeStep);
+    } else {
+        instructionOpacity = Math.max(0, instructionOpacity - fadeStep);
+    }
+
+    if (showShape) {
+        shapeOpacity = Math.min(1, shapeOpacity + fadeStep);
+    } else {
+        shapeOpacity = Math.max(0, shapeOpacity - fadeStep);
+    }
+
+    if (!showShape && shapeOpacity === 0 && shapeInitialized) {
+        shapeInitialized = false;
+        path = [];
+        holes = [];
+        dragging = false;
+        draggingVertexIndices = [];
+        draggingHandIndex = -1;
+        poking = false;
+        pokingHandIndex = -1;
+        pokeCompleted = false;
+    }
 }
 
 function drawHands(){
@@ -415,10 +684,358 @@ function isPointInPolygon(fingerPos, path, extraContours = []) {
     return crossings % 2 === 1;
 }
 
-function readGesture() {
-    
+function segmentsIntersect(a, b, c, d) {
+    const cross = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    const onSegment = (p, q, r) =>
+        q.x >= Math.min(p.x, r.x) && q.x <= Math.max(p.x, r.x) &&
+        q.y >= Math.min(p.y, r.y) && q.y <= Math.max(p.y, r.y);
+    const abC = cross(a, b, c);
+    const abD = cross(a, b, d);
+    const cdA = cross(c, d, a);
+    const cdB = cross(c, d, b);
 
-    for (const hand of hands) {
+    if (((abC > 0 && abD < 0) || (abC < 0 && abD > 0)) &&
+        ((cdA > 0 && cdB < 0) || (cdA < 0 && cdB > 0))) return true;
+    return (abC === 0 && onSegment(a, c, b)) ||
+        (abD === 0 && onSegment(a, d, b)) ||
+        (cdA === 0 && onSegment(c, a, d)) ||
+        (cdB === 0 && onSegment(c, b, d));
+}
+
+function holeOverlapsOutline(hole, outline) {
+    const holePoints = hole.points.map(vertex => vertex.pos);
+    if (outline.some(vertex => isPointInPolygon(vertex.pos, hole.points))) return true;
+
+    for (let i = 0; i < holePoints.length; i++) {
+        const holeStart = holePoints[i];
+        const holeEnd = holePoints[(i + 1) % holePoints.length];
+        for (let j = 0; j < outline.length; j++) {
+            const outlineStart = outline[j].pos;
+            const outlineEnd = outline[(j + 1) % outline.length].pos;
+            if (segmentsIntersect(holeStart, holeEnd, outlineStart, outlineEnd)) return true;
+        }
+    }
+    return false;
+}
+
+function polygonArea(points) {
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+        const current = points[i];
+        const next = points[(i + 1) % points.length];
+        area += current.x * next.y - next.x * current.y;
+    }
+    return area / 2;
+}
+
+function findPolygonSelfIntersection(points) {
+    const cross = (a, b, c) =>
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+
+    for (let i = 0; i < points.length; i++) {
+        const startA = points[i];
+        const endA = points[(i + 1) % points.length];
+        for (let j = i + 2; j < points.length; j++) {
+            if (i === 0 && j === points.length - 1) continue;
+            const startB = points[j];
+            const endB = points[(j + 1) % points.length];
+            const firstSide = cross(startA, endA, startB);
+            const secondSide = cross(startA, endA, endB);
+            const thirdSide = cross(startB, endB, startA);
+            const fourthSide = cross(startB, endB, endA);
+            if (firstSide * secondSide < 0 && thirdSide * fourthSide < 0) {
+                return { firstEdge: i, secondEdge: j };
+            }
+        }
+    }
+    return null;
+}
+
+function untanglePolygonOutline(points) {
+    const outline = points.slice();
+    const maxAttempts = outline.length * outline.length;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const intersection = findPolygonSelfIntersection(outline);
+        if (!intersection) return outline;
+
+        const { firstEdge, secondEdge } = intersection;
+        const reversedSection = outline
+            .slice(firstEdge + 1, secondEdge + 1)
+            .reverse();
+        outline.splice(firstEdge + 1, reversedSection.length, ...reversedSection);
+    }
+    return findPolygonSelfIntersection(outline) ? null : outline;
+}
+
+function untangleVertexOutline(vertices) {
+    const points = vertices.map(vertex => ({
+        x: vertex.pos.x,
+        y: vertex.pos.y,
+        vertex
+    }));
+    const untangled = untanglePolygonOutline(points);
+    if (!untangled || !findPolygonSelfIntersection(points)) return false;
+    vertices.splice(0, vertices.length, ...untangled.map(point => point.vertex));
+    return true;
+}
+
+function pointOnSegment(point, start, end) {
+    const cross = (end.x - start.x) * (point.y - start.y) -
+        (end.y - start.y) * (point.x - start.x);
+    const epsilon = 1e-6;
+    return Math.abs(cross) <= epsilon &&
+        point.x >= Math.min(start.x, end.x) - epsilon &&
+        point.x <= Math.max(start.x, end.x) + epsilon &&
+        point.y >= Math.min(start.y, end.y) - epsilon &&
+        point.y <= Math.max(start.y, end.y) + epsilon;
+}
+
+function pointOnPolygonBoundary(point, polygon) {
+    return polygon.some((start, i) =>
+        pointOnSegment(point, start, polygon[(i + 1) % polygon.length]));
+}
+
+function boundarySegmentRunsSameDirection(start, end, point, polygon) {
+    for (let i = 0; i < polygon.length; i++) {
+        const edgeStart = polygon[i];
+        const edgeEnd = polygon[(i + 1) % polygon.length];
+        if (!pointOnSegment(point, edgeStart, edgeEnd)) continue;
+        const dot = (end.x - start.x) * (edgeEnd.x - edgeStart.x) +
+            (end.y - start.y) * (edgeEnd.y - edgeStart.y);
+        return dot > 0;
+    }
+    return false;
+}
+
+function pointInOrOnPolygon(point, polygon) {
+    return pointOnPolygonBoundary(point, polygon) || isPointInPolygon(point, polygon);
+}
+
+function polygonHasInteriorPointInside(polygon, other) {
+    return polygon.some((point, i) => {
+        const next = polygon[(i + 1) % polygon.length];
+        const midpoint = { x: (point.x + next.x) / 2, y: (point.y + next.y) / 2 };
+        return isPointInPolygon(point, other) || isPointInPolygon(midpoint, other);
+    });
+}
+
+function polygonsHaveSameBoundary(first, second) {
+    return first.length === second.length &&
+        first.every(point => second.some(candidate =>
+            Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 1e-4));
+}
+
+function findSegmentIntersection(startA, endA, startB, endB) {
+    const directionAX = endA.x - startA.x;
+    const directionAY = endA.y - startA.y;
+    const directionBX = endB.x - startB.x;
+    const directionBY = endB.y - startB.y;
+    const denominator = directionAX * directionBY - directionAY * directionBX;
+    if (Math.abs(denominator) < 1e-9) return null;
+
+    const offsetX = startB.x - startA.x;
+    const offsetY = startB.y - startA.y;
+    const t = (offsetX * directionBY - offsetY * directionBX) / denominator;
+    const u = (offsetX * directionAY - offsetY * directionAX) / denominator;
+    const epsilon = 1e-8;
+    if (t < -epsilon || t > 1 + epsilon || u < -epsilon || u > 1 + epsilon) return null;
+
+    const clampedT = Math.max(0, Math.min(1, t));
+    const clampedU = Math.max(0, Math.min(1, u));
+    return { t: clampedT, u: clampedU };
+}
+
+function collectUnionBoundarySegments(subject, clip, splitParameters) {
+    const segments = [];
+    for (let i = 0; i < subject.length; i++) {
+        const start = subject[i];
+        const end = subject[(i + 1) % subject.length];
+        const parameters = [0, ...splitParameters[i], 1]
+            .sort((a, b) => a - b)
+            .filter((parameter, index, values) => index === 0 || parameter - values[index - 1] > 1e-8);
+
+        for (let j = 0; j < parameters.length - 1; j++) {
+            const startT = parameters[j];
+            const endT = parameters[j + 1];
+            if (endT - startT <= 1e-8) continue;
+            const segmentStart = {
+                x: start.x + (end.x - start.x) * startT,
+                y: start.y + (end.y - start.y) * startT
+            };
+            const segmentEnd = {
+                x: start.x + (end.x - start.x) * endT,
+                y: start.y + (end.y - start.y) * endT
+            };
+            const midpoint = {
+                x: (segmentStart.x + segmentEnd.x) / 2,
+                y: (segmentStart.y + segmentEnd.y) / 2
+            };
+            if (pointOnPolygonBoundary(midpoint, clip)) {
+                if (!boundarySegmentRunsSameDirection(segmentStart, segmentEnd, midpoint, clip)) continue;
+            } else if (isPointInPolygon(midpoint, clip)) {
+                continue;
+            }
+            segments.push({ start: segmentStart, end: segmentEnd });
+        }
+    }
+    return segments;
+}
+
+function unionPolygonOutlines(firstHole, secondHole) {
+    const first = untanglePolygonOutline(firstHole.points.map(vertex => vertex.pos));
+    let second = untanglePolygonOutline(secondHole.points.map(vertex => vertex.pos));
+    if (!first || !second) return null;
+    if (first.length < 3 || second.length < 3) return null;
+    if (polygonArea(first) * polygonArea(second) < 0) second = second.slice().reverse();
+
+    const firstInsideSecond = first.every(point => pointInOrOnPolygon(point, second));
+    const secondInsideFirst = second.every(point => pointInOrOnPolygon(point, first));
+    if (polygonsHaveSameBoundary(first, second)) return first.map(point => ({ x: point.x, y: point.y }));
+
+    const firstSplits = first.map(() => []);
+    const secondSplits = second.map(() => []);
+    let intersectionCount = 0;
+    for (let i = 0; i < first.length; i++) {
+        const firstStart = first[i];
+        const firstEnd = first[(i + 1) % first.length];
+        for (let j = 0; j < second.length; j++) {
+            const secondStart = second[j];
+            const secondEnd = second[(j + 1) % second.length];
+            const intersection = findSegmentIntersection(firstStart, firstEnd, secondStart, secondEnd);
+            if (!intersection) continue;
+            firstSplits[i].push(intersection.t);
+            secondSplits[j].push(intersection.u);
+            intersectionCount++;
+        }
+    }
+
+    if (intersectionCount === 0) {
+        if (firstInsideSecond && (polygonHasInteriorPointInside(first, second) || secondInsideFirst)) {
+            return second.map(point => ({ x: point.x, y: point.y }));
+        }
+        if (secondInsideFirst && polygonHasInteriorPointInside(second, first)) {
+            return first.map(point => ({ x: point.x, y: point.y }));
+        }
+        return null;
+    }
+
+    const boundarySegments = [
+        ...collectUnionBoundarySegments(first, second, firstSplits),
+        ...collectUnionBoundarySegments(second, first, secondSplits)
+    ];
+    const nodes = [];
+    const getNode = point => {
+        let node = nodes.find(candidate =>
+            Math.hypot(candidate.x - point.x, candidate.y - point.y) <= 1e-4);
+        if (!node) {
+            node = { x: point.x, y: point.y, outgoing: [] };
+            nodes.push(node);
+        }
+        return node;
+    };
+    const edges = [];
+    const edgeKeys = new Set();
+    for (const segment of boundarySegments) {
+        const start = getNode(segment.start);
+        const end = getNode(segment.end);
+        if (start === end) continue;
+        const key = `${nodes.indexOf(start)}:${nodes.indexOf(end)}`;
+        if (edgeKeys.has(key)) continue;
+        edgeKeys.add(key);
+        const edge = { start, end };
+        start.outgoing.push(edge);
+        edges.push(edge);
+    }
+
+    const unusedEdges = new Set(edges);
+    const contours = [];
+    while (unusedEdges.size) {
+        const firstEdge = unusedEdges.values().next().value;
+        const contour = [];
+        let edge = firstEdge;
+        let closed = false;
+        for (let count = 0; count <= edges.length; count++) {
+            if (!unusedEdges.delete(edge)) break;
+            contour.push(edge.start);
+            if (edge.end === firstEdge.start) {
+                closed = true;
+                break;
+            }
+            const choices = edge.end.outgoing.filter(candidate => unusedEdges.has(candidate));
+            if (!choices.length) break;
+            if (choices.length === 1) {
+                edge = choices[0];
+                continue;
+            }
+            const incomingAngle = Math.atan2(edge.end.y - edge.start.y, edge.end.x - edge.start.x);
+            edge = choices.reduce((best, candidate) => {
+                const angle = Math.atan2(candidate.end.y - candidate.start.y, candidate.end.x - candidate.start.x);
+                const turn = Math.atan2(Math.sin(angle - incomingAngle), Math.cos(angle - incomingAngle));
+                const bestAngle = Math.atan2(best.end.y - best.start.y, best.end.x - best.start.x);
+                const bestTurn = Math.atan2(Math.sin(bestAngle - incomingAngle), Math.cos(bestAngle - incomingAngle));
+                return Math.abs(turn) < Math.abs(bestTurn) ? candidate : best;
+            });
+        }
+        if (!closed || contour.length < 3) return null;
+        contours.push(contour);
+    }
+
+    if (!contours.length) return null;
+    // A hole stores one outline, so retain the union's exterior contour.
+    const outerContour = contours.reduce((largest, contour) =>
+        Math.abs(polygonArea(contour)) > Math.abs(polygonArea(largest)) ? contour : largest
+    );
+    return untanglePolygonOutline(
+        outerContour.map(point => ({ x: point.x, y: point.y }))
+    );
+}
+
+function mergeOverlappingHoles() {
+    const outerPoints = path.map(vertex => vertex.pos);
+    const outerWinding = Math.sign(polygonArea(outerPoints));
+    for (const hole of holes) {
+        untangleVertexOutline(hole.points);
+        if (outerWinding && Math.sign(polygonArea(hole.points.map(vertex => vertex.pos))) === outerWinding) {
+            hole.points.reverse();
+        }
+    }
+
+    let merged;
+    do {
+        merged = false;
+        for (let i = 0; i < holes.length && !merged; i++) {
+            for (let j = i + 1; j < holes.length; j++) {
+                const outline = unionPolygonOutlines(holes[i], holes[j]);
+                if (!outline) continue;
+                const center = createVector(
+                    outline.reduce((sum, point) => sum + point.x, 0) / outline.length,
+                    outline.reduce((sum, point) => sum + point.y, 0) / outline.length
+                );
+                holes[i] = {
+                    center,
+                    points: outline.map(point => new Vertex(createVector(point.x, point.y)))
+                };
+                holes.splice(j, 1);
+                merged = true;
+                break;
+            }
+        }
+    } while (merged);
+}
+
+function readGesture() {
+    const eligibleHands = hands.filter(isHandLargeEnough);
+    if (eligibleHands.length === 0) {
+        dragging = false;
+        draggingVertexIndices = [];
+        draggingHandIndex = -1;
+        poking = false;
+        pokingHandIndex = -1;
+        pokeCompleted = false;
+        return;
+    }
+
+    for (const hand of eligibleHands) {
         // Detect index finger and thumb gesture
         // Detect middle finger and thumb gesture
         let inf = hand.keypoints[8]; // Index finger tip
@@ -440,10 +1057,10 @@ function readGesture() {
             && (dist_rf_th > dist_if_th * 3)
             && (dist_pf_th > dist_if_th * 3)
             ) {
-            fill(255, 0, 0);
-            textSize(32);
-            textAlign(LEFT, TOP);
-            text("DRAG", 5, 5);
+            // fill(255, 0, 0);
+            // textSize(32);
+            // textAlign(LEFT, TOP);
+            // text("DRAG", 5, 5);
             // dragShape(inf);
             dragging = true;
             draggingHandIndex = hands.indexOf(hand);
@@ -455,10 +1072,10 @@ function readGesture() {
             && (dist_rf_th > dist_mf_th * 3)
             && (dist_pf_th > dist_mf_th * 3)
             ) {
-            fill(255, 0, 0);
-            textSize(32);
-            textAlign(LEFT, TOP);
-            text("POKE", 5, 5);
+            // fill(255, 0, 0);
+            // textSize(32);
+            // textAlign(LEFT, TOP);
+            // text("POKE", 5, 5);
             // pokeShape(mf.x, mf.y);
             dragging = false;
             poking = true;
@@ -501,6 +1118,72 @@ function updateShape() {
     }
 }
 
+function updateShapeRetreat() {
+    if (shapeRetreatStartedAtMs === null || noEligibleHandSinceMs === null) return;
+
+    const now = millis();
+    const elapsedMs = Math.min(Math.max(now - lastShapeRetreatUpdateMs, 0), MAX_FADE_FRAME_MS);
+    lastShapeRetreatUpdateMs = now;
+    const travelDistance = SHAPE_RETURN_SPEED * elapsedMs / 1000;
+
+    for (const { vertex, target } of retreatAnchors) {
+        const dx = target.x - vertex.pos.x;
+        const dy = target.y - vertex.pos.y;
+        const distance = Math.hypot(dx, dy);
+        if (distance <= travelDistance) {
+            vertex.pos.set(target);
+        } else if (distance > 0) {
+            vertex.pos.x += dx / distance * travelDistance;
+            vertex.pos.y += dy / distance * travelDistance;
+        }
+        vertex.vel.set(0, 0);
+    }
+
+    if (retreatVertexBeingRemoved) {
+        const index = path.indexOf(retreatVertexBeingRemoved);
+        if (index >= 0) {
+            const previous = path[(index - 1 + path.length) % path.length].pos;
+            const next = path[(index + 1) % path.length].pos;
+            const progress = Math.min(
+                (now - retreatVertexRemovalStartedAtMs) / RETREAT_VERTEX_COLLAPSE_DURATION_MS,
+                1
+            );
+            const easedProgress = progress * progress * (3 - 2 * progress);
+            const targetX = (previous.x + next.x) / 2;
+            const targetY = (previous.y + next.y) / 2;
+            retreatVertexBeingRemoved.pos.set(
+                retreatVertexRemovalStartPosition.x +
+                    (targetX - retreatVertexRemovalStartPosition.x) * easedProgress,
+                retreatVertexRemovalStartPosition.y +
+                    (targetY - retreatVertexRemovalStartPosition.y) * easedProgress
+            );
+            retreatVertexBeingRemoved.vel.set(0, 0);
+
+            if (progress === 1) {
+                path.splice(index, 1);
+                retreatVerticesToRemove.shift();
+                retreatVertexBeingRemoved = null;
+                retreatVertexRemovalStartedAtMs = null;
+                retreatVertexRemovalStartPosition = null;
+            }
+        } else {
+            retreatVerticesToRemove.shift();
+            retreatVertexBeingRemoved = null;
+            retreatVertexRemovalStartedAtMs = null;
+            retreatVertexRemovalStartPosition = null;
+        }
+    }
+
+    if (!retreatVertexBeingRemoved && retreatVerticesToRemove.length &&
+        now >= nextRetreatVertexRemovalAtMs) {
+        retreatVertexBeingRemoved = retreatVerticesToRemove[0];
+        retreatVertexRemovalStartedAtMs = now;
+        retreatVertexRemovalStartPosition = retreatVertexBeingRemoved.pos.copy();
+        nextRetreatVertexRemovalAtMs = now + RETREAT_VERTEX_REMOVAL_INTERVAL_MS;
+    }
+
+}
+
 function dragShape(indexFingerPos) {
     draggingVertexIndices = [];
     let closestVertex = null;
@@ -538,10 +1221,165 @@ function dragShape(indexFingerPos) {
 
 function pokeShape(x, y) {
     let holePos = createVector(x, y);
+    const containingHole = holes.find(hole => isPointInPolygon(holePos, hole.points));
+    if (containingHole) {
+        pokeHoleBoundary(containingHole, holePos);
+        return;
+    }
+
     const holeContours = holes.map(h => h.points);
     if (isPointInPolygon(holePos, path, holeContours)) {
         let hole = makeHole(createVector(x, y));
         holes.push(hole);
+    }
+}
+
+function pokeHoleBoundary(hole, pokePosition) {
+    const nearbyVertices = hole.points.filter(vertex =>
+        dist(vertex.pos.x, vertex.pos.y, pokePosition.x, pokePosition.y) < PUSH_RADIUS);
+    if (nearbyVertices.length) {
+        for (const vertex of nearbyVertices) vertex.pushAway(pokePosition);
+        return;
+    }
+
+    let closestEdgeIndex = -1;
+    let closestPoint = null;
+    let closestDistance = Infinity;
+    for (let i = 0; i < hole.points.length; i++) {
+        const start = hole.points[i].pos;
+        const end = hole.points[(i + 1) % hole.points.length].pos;
+        const point = closestPointOnSegment(pokePosition, start, end);
+        const distance = dist(pokePosition.x, pokePosition.y, point.x, point.y);
+        if (distance < closestDistance) {
+            closestEdgeIndex = i;
+            closestPoint = point;
+            closestDistance = distance;
+        }
+    }
+
+    if (closestPoint && hole.points.length < MAX_VERTICES) {
+        const vertex = new Vertex(closestPoint);
+        hole.points.splice(closestEdgeIndex + 1, 0, vertex);
+        vertex.pushAway(pokePosition, closestDistance + PUSH_RADIUS);
+    }
+}
+
+function closestPointOnSegment(point, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lengthSquared = dx * dx + dy * dy;
+    const t = lengthSquared === 0
+        ? 0
+        : constrain(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+    return createVector(start.x + dx * t, start.y + dy * t);
+}
+
+function getHoleOutlineIntersections(hole, outline) {
+    const intersections = [];
+    const addIntersection = (point, edgeStart, edgeEnd) => {
+        if (intersections.some(intersection =>
+            dist(intersection.point.x, intersection.point.y, point.x, point.y) < 1e-4)) return;
+        intersections.push({ point: createVector(point.x, point.y), edgeStart, edgeEnd });
+    };
+
+    for (let i = 0; i < hole.points.length; i++) {
+        const holeStart = hole.points[i].pos;
+        const holeEnd = hole.points[(i + 1) % hole.points.length].pos;
+        for (let j = 0; j < outline.length; j++) {
+            const edgeStart = outline[j];
+            const edgeEnd = outline[(j + 1) % outline.length];
+            const intersection = findSegmentIntersection(holeStart, holeEnd, edgeStart.pos, edgeEnd.pos);
+            if (intersection) {
+                addIntersection(
+                    createVector(
+                        edgeStart.pos.x + (edgeEnd.pos.x - edgeStart.pos.x) * intersection.u,
+                        edgeStart.pos.y + (edgeEnd.pos.y - edgeStart.pos.y) * intersection.u
+                    ),
+                    edgeStart,
+                    edgeEnd
+                );
+            } else if (segmentsIntersect(holeStart, holeEnd, edgeStart.pos, edgeEnd.pos)) {
+                for (const point of [holeStart, holeEnd, edgeStart.pos, edgeEnd.pos]) {
+                    if (pointOnSegment(point, holeStart, holeEnd) &&
+                        pointOnSegment(point, edgeStart.pos, edgeEnd.pos)) {
+                        addIntersection(point, edgeStart, edgeEnd);
+                    }
+                }
+            }
+        }
+    }
+    return intersections;
+}
+
+function getHoleCenter(hole) {
+    return createVector(
+        hole.points.reduce((sum, vertex) => sum + vertex.pos.x, 0) / hole.points.length,
+        hole.points.reduce((sum, vertex) => sum + vertex.pos.y, 0) / hole.points.length
+    );
+}
+
+function pushOutlineVertexOutward(vertex, center, proximity = 0, influenceRadius = PUSH_RADIUS * 1.5) {
+    const dx = vertex.pos.x - center.x;
+    const dy = vertex.pos.y - center.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < 1e-3 || proximity >= influenceRadius) return;
+
+    const strength = PUSH_STRENGTH * (1 - proximity / influenceRadius);
+    vertex.vel.x += dx / distance * strength;
+    vertex.vel.y += dy / distance * strength;
+}
+
+function pushOutlineAtHoleOverlap(hole, intersection) {
+    const influenceRadius = PUSH_RADIUS * 1.5;
+    let nearbyVertices = path.filter(vertex =>
+        dist(vertex.pos.x, vertex.pos.y, intersection.point.x, intersection.point.y) < influenceRadius);
+
+    if (!nearbyVertices.length && path.length < MAX_VERTICES) {
+        const edgeIndex = findPathEdgeIndex(intersection.edgeStart, intersection.edgeEnd, intersection.point);
+        if (edgeIndex >= 0) {
+            const vertex = new Vertex(intersection.point);
+            path.splice(edgeIndex + 1, 0, vertex);
+            nearbyVertices = [vertex];
+        }
+    }
+
+    const center = getHoleCenter(hole);
+    for (const vertex of nearbyVertices) {
+        const proximity = dist(vertex.pos.x, vertex.pos.y, intersection.point.x, intersection.point.y);
+        pushOutlineVertexOutward(vertex, center, proximity, influenceRadius);
+    }
+}
+
+function findPathEdgeIndex(edgeStart, edgeEnd, point) {
+    const startIndex = path.indexOf(edgeStart);
+    const endIndex = path.indexOf(edgeEnd);
+    if (startIndex < 0 || endIndex < 0) return -1;
+
+    let index = startIndex;
+    for (let count = 0; count < path.length; count++) {
+        const nextIndex = (index + 1) % path.length;
+        if (pointOnSegment(point, path[index].pos, path[nextIndex].pos)) return index;
+        if (nextIndex === endIndex) break;
+        index = nextIndex;
+    }
+    return startIndex;
+}
+
+function resolveHoleOutlineOverlaps() {
+    for (const hole of holes) {
+        if (!holeOverlapsOutline(hole, path)) continue;
+        const intersections = getHoleOutlineIntersections(hole, path);
+        if (intersections.length) {
+            for (const intersection of intersections) pushOutlineAtHoleOverlap(hole, intersection);
+            continue;
+        }
+
+        const center = getHoleCenter(hole);
+        for (const vertex of path) {
+            if (isPointInPolygon(vertex.pos, hole.points)) {
+                pushOutlineVertexOutward(vertex, center);
+            }
+        }
     }
 }
 
@@ -572,7 +1410,7 @@ function pushShape() {
         }
     }
 
-    for (const h of hands) {
+    for (const h of hands.filter(isHandLargeEnough)) {
         for (const kp of h.keypoints) {
             let nearestEdge = null;
             let nearestEdgeDist = Infinity;
@@ -805,7 +1643,7 @@ function renderShape() {
         drawingContext.closePath();
     }
     drawingContext.closePath();
-    drawingContext.clip();
+    drawingContext.clip('evenodd');
 
     const g = drawingContext.createLinearGradient(0, 0, width, height);
     g.addColorStop(0, 'rgba(255,255,255,0.00)');
@@ -858,21 +1696,36 @@ function draw() {
     background(11);
     drawVideoCover(0, 0, width, height);
 
+    updateShapeVisibility();
+    updateShapeOpacity();
+
+    if (shapeInitialized) {
+        readGesture();
+        updateShape();
+        untangleVertexOutline(path);
+        updateShapeRetreat();
+        mergeOverlappingHoles();
+        resolveHoleOutlineOverlaps();
+    }
+
+    if (instructionOpacity > 0) {
+        drawingContext.save();
+        drawingContext.globalAlpha = instructionOpacity;
+        drawInstructionImage();
+        drawingContext.restore();
+    }
+    if (shapeInitialized && shapeOpacity > 0) {
+        drawingContext.save();
+        drawingContext.globalAlpha = shapeOpacity;
+        renderShape();
+        drawingContext.restore();
+    }
+
     if (camError) {
         fill(255, 0, 0);
         textSize(32);
         textAlign(CENTER, CENTER);
         text("Camera error", width/2, height/2);
-        return;
     }
-
-    if (!camReady) {
-        return;
-    }
-
-    // let hands_translated = translateHands();
-    // drawHands();
-    readGesture();
-    updateShape();
-    renderShape();
+    drawHandSizes();
 }
